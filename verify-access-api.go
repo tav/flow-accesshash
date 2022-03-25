@@ -492,6 +492,7 @@ func deriveExecutionResultV2(exec flowExecutionResult) flow.Identifier {
 
 func generateCanaryTest(addr string, height uint64) Network {
 	client := newClient(addr)
+	search := false
 	test := &TestCase{
 		APIServer: addr,
 		Generated: true,
@@ -501,9 +502,11 @@ func generateCanaryTest(addr string, height uint64) Network {
 	var (
 		blockResp  *access.BlockResponse
 		eventsResp *access.EventsResponse
+		hdrResp    *access.BlockHeaderResponse
 		err        error
 	)
 	if height == 0 {
+		search = true
 		test.retry(func(ctx context.Context) error {
 			blockResp, err = client.GetLatestBlock(
 				ctx,
@@ -517,7 +520,7 @@ func generateCanaryTest(addr string, height uint64) Network {
 	}
 
 blockloop:
-	for height > 0 {
+	for search && height > 0 {
 		start := height - eventsHeightRange + 1
 		test.retry(func(ctx context.Context) error {
 			eventsResp, err = client.GetEventsForHeightRange(
@@ -538,13 +541,43 @@ blockloop:
 				height = result.BlockHeight
 				test.BlockHeight = height
 				test.BlockID = hex.EncodeToString(result.BlockId)
-				log.Infof("Found candidate block for generated test at height %d", height)
+				log.Infof(
+					"Found candidate block %x for generated test at height %d",
+					result.BlockId, height,
+				)
 				break blockloop
 			}
 		}
 		height -= eventsHeightRange
 	}
 
+	if !search {
+		test.retry(func(ctx context.Context) error {
+			blockResp, err = client.GetBlockByHeight(
+				ctx,
+				&access.GetBlockByHeightRequest{
+					Height: height,
+				},
+			)
+			return err
+		}, "block %d", height)
+		test.BlockHeight = height
+		test.BlockID = hex.EncodeToString(blockResp.Block.Id)
+		log.Infof(
+			"Using specified block %x for generated test at height %d",
+			blockResp.Block.Id, height,
+		)
+	}
+
+	test.retry(func(ctx context.Context) error {
+		hdrResp, err = client.GetBlockHeaderByHeight(
+			ctx,
+			&access.GetBlockHeaderByHeightRequest{
+				Height: height,
+			},
+		)
+		return err
+	}, "block header %d", height)
 	test.retry(func(ctx context.Context) error {
 		blockResp, err = client.GetBlockByHeight(
 			ctx,
@@ -566,7 +599,7 @@ blockloop:
 	}, "execution result for block %x at %d", blockResp.Block.Id, blockResp.Block.Height)
 	test.ResultID = hex.EncodeToString(execResultResp.ExecutionResult.PreviousResultId)
 	return Network{
-		ChainID: flow.Canary,
+		ChainID: flow.ChainID(hdrResp.Block.ChainId),
 		Tests:   []*TestCase{test},
 	}
 }
@@ -797,7 +830,7 @@ func verifyBlockHashing(test *TestCase) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: verify-access-api <host-port-for-canary-access-api-server> [<starting-height>]")
+		fmt.Println("Usage: verify-access-api <host-port-for-canary-access-api-server> [<block-height>]")
 		os.Exit(1)
 	}
 	initLog()
@@ -805,7 +838,7 @@ func main() {
 	if len(os.Args) > 2 {
 		val, err := strconv.ParseUint(os.Args[2], 10, 64)
 		if err != nil {
-			log.Fatalf("Failed to decode starting height value %q: %s", os.Args[2], err)
+			log.Fatalf("Failed to decode block height value %q: %s", os.Args[2], err)
 		}
 		height = val
 	}
