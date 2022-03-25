@@ -84,7 +84,7 @@ func (n Network) validateTestConfig() {
 	start := n.Tests[0].Spork
 	for i, test := range n.Tests {
 		test.ChainID = n.ChainID
-		if !test.Generated {
+		if !test.Dynamic {
 			if test.Spork == 0 {
 				log.Fatalf(
 					"Missing Spork value in the %s test at offset %d",
@@ -93,38 +93,38 @@ func (n Network) validateTestConfig() {
 			}
 			if test.Spork != start+i {
 				log.Fatalf(
-					"Invalid Spork value found in the test config for %s: %d (does not follow from the previous spork)",
+					"Invalid Spork value found in the test config %s: %d (does not follow from the previous spork)",
 					test, test.Version,
 				)
 			}
 		}
 		if test.APIServer == "" {
 			log.Fatalf(
-				"Missing APIServer value in the test config for %s",
+				"Missing APIServer value in the test config %s",
 				test,
 			)
 		}
 		if test.BlockID == "" {
 			log.Fatalf(
-				"Missing BlockID value in the test config for %s",
+				"Missing BlockID value in the test config %s",
 				test,
 			)
 		}
 		if test.BlockHeight == 0 {
 			log.Fatalf(
-				"Missing BlockHeight value in the test config for %s",
+				"Missing BlockHeight value in the test config %s",
 				test,
 			)
 		}
 		if test.Version == 0 {
 			log.Fatalf(
-				"Missing Version value in the test config for %s",
+				"Missing Version value in the test config %s",
 				test,
 			)
 		}
 		if test.Version < 1 || test.Version > 2 {
 			log.Fatalf(
-				"Invalid Version value found in the test config for %s: %d",
+				"Invalid Version value found in the test config %s: %d",
 				test, test.Version,
 			)
 		}
@@ -137,17 +137,20 @@ type TestCase struct {
 	BlockID     string
 	BlockHeight uint64
 	ChainID     flow.ChainID // Automatically set from Network.ChainID
-	Generated   bool         // Should only be set for the dynamically generated test case for Canary
+	Dynamic     bool         // Should only be set for the dynamically generated test case
 	ResultID    string
 	Spork       int
 	Version     int
 }
 
 func (t TestCase) String() string {
-	if t.Generated {
-		return "generated test in flow-canary"
+	if t.Dynamic {
+		if t.ChainID == "" {
+			return "to generate the dynamic test case"
+		}
+		return fmt.Sprintf("for the dynamic test case in %s", t.ChainID)
 	}
-	return fmt.Sprintf("spork %d in %s", t.Spork, t.ChainID)
+	return fmt.Sprintf("for spork %d in %s", t.Spork, t.ChainID)
 }
 
 func (t TestCase) convertExecutionResult(blockID []byte, result *entities.ExecutionResult) flowExecutionResult {
@@ -177,7 +180,7 @@ func (t TestCase) convertExecutionResult(blockID []byte, result *entities.Execut
 			err := json.Unmarshal(ev.Payload, setup)
 			if err != nil {
 				log.Fatalf(
-					"Failed to decode %q service event in block %x for %s: %s",
+					"Failed to decode %q service event in block %x %s: %s",
 					ev.Type, blockID, t, err,
 				)
 			}
@@ -190,7 +193,7 @@ func (t TestCase) convertExecutionResult(blockID []byte, result *entities.Execut
 			err := json.Unmarshal(ev.Payload, commit)
 			if err != nil {
 				log.Fatalf(
-					"Failed to decode %q service event in block %x for %s: %s",
+					"Failed to decode %q service event in block %x %s: %s",
 					ev.Type, blockID, t, err,
 				)
 			}
@@ -200,7 +203,7 @@ func (t TestCase) convertExecutionResult(blockID []byte, result *entities.Execut
 			})
 		default:
 			log.Fatalf(
-				"Unknown service event type in block %x for %s: %q",
+				"Unknown service event type in block %x %s: %q",
 				blockID, t, ev.Type,
 			)
 		}
@@ -348,9 +351,9 @@ func (t TestCase) getEventHashes(client access.AccessAPIClient, block *entities.
 
 func (t TestCase) retry(runner func(ctx context.Context) error, format string, a ...interface{}) {
 	i := 0
+	msg := fmt.Sprintf(format, a...)
 	for {
-		msg := fmt.Sprintf(format, a...)
-		log.Infof("Making request to fetch %s for %s", msg, t)
+		log.Infof("Making request to fetch %s %s", msg, t)
 		ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 		err := runner(ctx)
 		cancel()
@@ -360,12 +363,12 @@ func (t TestCase) retry(runner func(ctx context.Context) error, format string, a
 		wait := waitTimes[i]
 		if wait == -1 {
 			log.Fatalf(
-				"Failed to fetch %s for %s: %s",
+				"Failed to fetch %s %s: %s",
 				msg, t, err,
 			)
 		} else {
 			log.Errorf(
-				"Failed to fetch %s for %s: %s (retrying after %s)",
+				"Failed to fetch %s %s: %s (retrying after %s)",
 				msg, t, err, wait,
 			)
 		}
@@ -490,12 +493,12 @@ func deriveExecutionResultV2(exec flowExecutionResult) flow.Identifier {
 	return flow.MakeID(dst)
 }
 
-func generateCanaryTest(addr string, height uint64) Network {
+func generateTest(addr string, height uint64) Network {
 	client := newClient(addr)
 	search := false
 	test := &TestCase{
 		APIServer: addr,
-		Generated: true,
+		Dynamic:   true,
 		Version:   latestVersion,
 	}
 
@@ -541,10 +544,6 @@ blockloop:
 				height = result.BlockHeight
 				test.BlockHeight = height
 				test.BlockID = hex.EncodeToString(result.BlockId)
-				log.Infof(
-					"Found candidate block %x for generated test at height %d",
-					result.BlockId, height,
-				)
 				break blockloop
 			}
 		}
@@ -563,10 +562,6 @@ blockloop:
 		}, "block %d", height)
 		test.BlockHeight = height
 		test.BlockID = hex.EncodeToString(blockResp.Block.Id)
-		log.Infof(
-			"Using specified block %x for generated test at height %d",
-			blockResp.Block.Id, height,
-		)
 	}
 
 	test.retry(func(ctx context.Context) error {
@@ -578,6 +573,12 @@ blockloop:
 		)
 		return err
 	}, "block header %d", height)
+
+	log.Infof(
+		"Found candidate block %s at height %d for the dynamic test case",
+		test.BlockID, test.BlockHeight,
+	)
+
 	test.retry(func(ctx context.Context) error {
 		blockResp, err = client.GetBlockByHeight(
 			ctx,
@@ -670,7 +671,7 @@ func verifyBlockHashing(test *TestCase) {
 		}
 		msg := fmt.Sprintf(format, a...)
 		log.Fatalf(
-			"Failed to %s for %s: %s",
+			"Failed to %s %s: %s",
 			msg, test, err,
 		)
 	}
@@ -693,7 +694,7 @@ func verifyBlockHashing(test *TestCase) {
 
 	if !bytes.Equal(hdrResp.Block.Id, blockID) {
 		log.Fatalf(
-			"Mismatching block ID from block header for %s: expected %x, got %x",
+			"Mismatching block ID from block header %s: expected %x, got %x",
 			test, blockID, hdrResp.Block.Id,
 		)
 	}
@@ -726,7 +727,7 @@ func verifyBlockHashing(test *TestCase) {
 	result := execResultResp.ExecutionResult
 	if len(result.Chunks) != len(eventHashes) {
 		log.Fatalf(
-			"Execution result for block %x for %s contains %d chunks, expected %d",
+			"Execution result for block %x %s contains %d chunks, expected %d",
 			blockID, test, len(result.Chunks), len(eventHashes),
 		)
 	}
@@ -735,7 +736,7 @@ func verifyBlockHashing(test *TestCase) {
 		chunk := result.Chunks[idx]
 		if !bytes.Equal(chunk.EventCollection, eventHash[:]) {
 			log.Fatalf(
-				"Got mismatching event hash within chunk at offset %d of block %x for %s: expected %x, got %x",
+				"Got mismatching event hash within chunk at offset %d of block %x %s: expected %x, got %x",
 				idx, blockID, test, eventHash[:], chunk.EventCollection,
 			)
 		}
@@ -748,7 +749,7 @@ func verifyBlockHashing(test *TestCase) {
 
 	if !bytes.Equal(resultID[:], expectedResultID) {
 		log.Fatalf(
-			"Mismatching result ID for %s: expected %x, got %x",
+			"Mismatching result ID %s: expected %x, got %x",
 			test, expectedResultID, resultID[:],
 		)
 	}
@@ -769,7 +770,7 @@ func verifyBlockHashing(test *TestCase) {
 	blockIDFromHeader := test.deriveBlockID(hdr)
 	if !bytes.Equal(blockIDFromHeader[:], blockID) {
 		log.Fatalf(
-			"Mismatching block ID from header for %s: expected %x, got %x for %#v",
+			"Mismatching block ID from header %s: expected %x, got %x for %#v",
 			test, blockID, blockIDFromHeader[:], hdr,
 		)
 	}
@@ -825,12 +826,12 @@ func verifyBlockHashing(test *TestCase) {
 		)
 	}
 
-	log.Infof(">> Successfully verified block hashing for %s", test)
+	log.Infof(">> Successfully verified block hashing %s", test)
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: verify-access-api <host-port-for-canary-access-api-server> [<block-height>]")
+		fmt.Println("Usage: verify-access-api <host-port-for-access-api-server> [<block-height>]")
 		os.Exit(1)
 	}
 	initLog()
@@ -843,7 +844,7 @@ func main() {
 		height = val
 	}
 	networks := []Network{
-		generateCanaryTest(os.Args[1], height),
+		generateTest(os.Args[1], height),
 		// TODO(tav): Re-enable mainnet and testnet once Access API changes have
 		// been deployed to those networks.
 		// mainnet,
