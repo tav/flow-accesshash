@@ -53,7 +53,6 @@ var mainnet = Network{
 			APIServer:   "access-001.mainnet16.nodes.onflow.org:9000",
 			BlockID:     "b785ac55bde24440d3dc77ee7cd820df48be5dbc4a13dee796be6cb1eb58ec64",
 			BlockHeight: 27341468,
-			ResultID:    "fc5e4a3383f68b0aa22fd5e7f9a6673d8e3fd1876ee3e7bcb8379aeaaef630d7",
 			Spork:       16,
 			Version:     2,
 		},
@@ -61,7 +60,6 @@ var mainnet = Network{
 			APIServer:   "access-001.mainnet17.nodes.onflow.org:9000",
 			BlockID:     "56454d4f3986b3883afa07a32b0e13301cea29e33233f1686077069a9f82642b",
 			BlockHeight: 27416462,
-			ResultID:    "b273956a0a27929f2d6df2227769cf6ed9a9d6dc31894f8f680aceadf7a11472",
 			Spork:       17,
 			Version:     2,
 		},
@@ -75,7 +73,6 @@ var testnet = Network{
 			APIServer:   "access-001.devnet33.nodes.onflow.org:9000",
 			BlockID:     "1cf5668a631489833bd314f500156802843301af55848e676b60afb8b405c8b4",
 			BlockHeight: 64904844,
-			ResultID:    "6d57cc71d31e254eeab08a19bb10802f3571a2c796d01b77122c077f7ae16469",
 			Spork:       33,
 			Version:     2,
 		},
@@ -83,7 +80,6 @@ var testnet = Network{
 			APIServer:   "access-001.devnet34.nodes.onflow.org:9000",
 			BlockID:     "097d5f0121d090c7b7efaf66493e28b8ecc5b8444427c2e851a3c40214e7c21a",
 			BlockHeight: 65197152,
-			ResultID:    "fd5b048c1fbe8aceb77aa02b845d2affb2eef646ad711274b935d4c512dc1be6",
 			Spork:       34,
 			Version:     2,
 		},
@@ -154,7 +150,6 @@ type TestCase struct {
 	BlockHeight uint64
 	ChainID     flow.ChainID // Automatically set from Network.ChainID
 	Dynamic     bool         // Should only be set for the dynamically generated test case
-	ResultID    string
 	Spork       int
 	Version     int
 }
@@ -603,37 +598,9 @@ blockloop:
 	}, "block header %d", height)
 
 	log.Infof(
-		"Found candidate block %s at height %d for the dynamic test case",
+		"✨ Found candidate block %s at height %d for the dynamic test case",
 		test.BlockID, test.BlockHeight,
 	)
-
-	test.retry(func(ctx context.Context) error {
-		blockResp, err = client.GetBlockByHeight(
-			ctx,
-			&access.GetBlockByHeightRequest{
-				Height: height + 1,
-			},
-		)
-		return err
-	}, "descendant block %d", height+1)
-
-	var execResultResp *access.ExecutionResultForBlockIDResponse
-	test.retry(func(ctx context.Context) error {
-		execResultResp, err = client.GetExecutionResultForBlockID(
-			ctx,
-			&access.GetExecutionResultForBlockIDRequest{
-				BlockId: blockResp.Block.Id,
-			},
-		)
-		return err
-	}, "execution result for block %x at %d", blockResp.Block.Id, blockResp.Block.Height)
-
-	test.ResultID = hex.EncodeToString(execResultResp.ExecutionResult.PreviousResultId)
-	log.Infof(
-		"Found execution result ID %s for block %x at %d",
-		test.ResultID, blockResp.Block.Id, blockResp.Block.Height,
-	)
-
 	return Network{
 		ChainID: flow.ChainID(hdrResp.Block.ChainId),
 		Tests:   []*TestCase{test},
@@ -746,6 +713,13 @@ func verifyBlockHashing(test *TestCase) {
 		)
 	}
 
+	if hdrResp.Block.Height != test.BlockHeight {
+		log.Fatalf(
+			"Mismatching block height from block header %s: expected %d, got %d",
+			test, test.BlockHeight, hdrResp.Block.Id,
+		)
+	}
+
 	var blockResp *access.BlockResponse
 	test.retry(func(ctx context.Context) error {
 		blockResp, err = client.GetBlockByID(
@@ -790,13 +764,33 @@ func verifyBlockHashing(test *TestCase) {
 
 	exec := test.convertExecutionResult(blockID, result)
 	resultID := test.deriveExecutionResult(exec)
-	expectedResultID, err := hex.DecodeString(test.ResultID)
-	exitIf(err, "decode test result ID")
 
-	if !bytes.Equal(resultID[:], expectedResultID) {
+	var childHdrResp *access.BlockHeaderResponse
+	test.retry(func(ctx context.Context) error {
+		childHdrResp, err = client.GetBlockHeaderByHeight(
+			ctx,
+			&access.GetBlockHeaderByHeightRequest{
+				Height: test.BlockHeight + 1,
+			},
+		)
+		return err
+	}, "header for descendant block %d", test.BlockHeight+1)
+
+	var childExecResultResp *access.ExecutionResultForBlockIDResponse
+	test.retry(func(ctx context.Context) error {
+		childExecResultResp, err = client.GetExecutionResultForBlockID(
+			ctx,
+			&access.GetExecutionResultForBlockIDRequest{
+				BlockId: childHdrResp.Block.Id,
+			},
+		)
+		return err
+	}, "execution result for descendant block %d", test.BlockHeight+1)
+
+	if !bytes.Equal(resultID[:], childExecResultResp.ExecutionResult.PreviousResultId) {
 		log.Fatalf(
 			"Mismatching result ID %s: expected %x, got %x",
-			test, expectedResultID, resultID[:],
+			test, childExecResultResp.ExecutionResult.PreviousResultId, resultID[:],
 		)
 	}
 
@@ -872,7 +866,7 @@ func verifyBlockHashing(test *TestCase) {
 		)
 	}
 
-	log.Infof(">> Successfully verified block hashing %s", test)
+	log.Infof("✅ Successfully verified block hashing %s", test)
 }
 
 func main() {
