@@ -25,12 +25,10 @@ import (
 )
 
 const (
-	defaultTimeout     = 30 * time.Second
-	eventsHeightRange  = 250
-	feesDepositedEvent = "A.912d5440f7e3769e.FlowFees.TokensDeposited"
-	flowDepositedEvent = "A.7e60df042a9c0868.FlowToken.TokensDeposited"
-	latestVersion      = 2
-	maxMessageSize     = 100 << 20 // 100MiB
+	defaultTimeout    = 30 * time.Second
+	eventsHeightRange = 250
+	latestVersion     = 2
+	maxMessageSize    = 100 << 20 // 100MiB
 )
 
 var (
@@ -46,16 +44,25 @@ var (
 	}
 )
 
-// TODO(tav): Configure the test cases once the Access API changes have been
+// NOTE(tav): Keep these updated with new test cases once new sporks have been
 // deployed to mainnet and testnet.
 var mainnet = Network{
 	ChainID: flow.Mainnet,
 	Tests: []*TestCase{
 		{
 			APIServer:   "access-001.mainnet16.nodes.onflow.org:9000",
-			BlockID:     "x",
-			BlockHeight: 1,
+			BlockID:     "b785ac55bde24440d3dc77ee7cd820df48be5dbc4a13dee796be6cb1eb58ec64",
+			BlockHeight: 27341468,
+			ResultID:    "fc5e4a3383f68b0aa22fd5e7f9a6673d8e3fd1876ee3e7bcb8379aeaaef630d7",
 			Spork:       16,
+			Version:     2,
+		},
+		{
+			APIServer:   "access-001.mainnet17.nodes.onflow.org:9000",
+			BlockID:     "56454d4f3986b3883afa07a32b0e13301cea29e33233f1686077069a9f82642b",
+			BlockHeight: 27416462,
+			ResultID:    "b273956a0a27929f2d6df2227769cf6ed9a9d6dc31894f8f680aceadf7a11472",
+			Spork:       17,
 			Version:     2,
 		},
 	},
@@ -66,9 +73,18 @@ var testnet = Network{
 	Tests: []*TestCase{
 		{
 			APIServer:   "access-001.devnet33.nodes.onflow.org:9000",
-			BlockID:     "x",
-			BlockHeight: 1,
+			BlockID:     "1cf5668a631489833bd314f500156802843301af55848e676b60afb8b405c8b4",
+			BlockHeight: 64904844,
+			ResultID:    "6d57cc71d31e254eeab08a19bb10802f3571a2c796d01b77122c077f7ae16469",
 			Spork:       33,
+			Version:     2,
+		},
+		{
+			APIServer:   "access-001.devnet34.nodes.onflow.org:9000",
+			BlockID:     "097d5f0121d090c7b7efaf66493e28b8ecc5b8444427c2e851a3c40214e7c21a",
+			BlockHeight: 65197152,
+			ResultID:    "fd5b048c1fbe8aceb77aa02b845d2affb2eef646ad711274b935d4c512dc1be6",
+			Spork:       34,
 			Version:     2,
 		},
 	},
@@ -122,7 +138,7 @@ func (n Network) validateTestConfig() {
 				test,
 			)
 		}
-		if test.Version < 1 || test.Version > 2 {
+		if test.Version < 1 || test.Version > latestVersion {
 			log.Fatalf(
 				"Invalid Version value found in the test config %s: %d",
 				test, test.Version,
@@ -155,14 +171,14 @@ func (t TestCase) String() string {
 
 func (t TestCase) convertExecutionResult(blockID []byte, result *entities.ExecutionResult) flowExecutionResult {
 	exec := flowExecutionResult{
-		BlockID:          toFlowIdentifier(blockID),
+		BlockID:          toFlowIdentifier(result.BlockId),
 		ExecutionDataID:  toFlowIdentifier(result.ExecutionDataId),
 		PreviousResultID: toFlowIdentifier(result.PreviousResultId),
 	}
 	for _, chunk := range result.Chunks {
 		exec.Chunks = append(exec.Chunks, &flow.Chunk{
 			ChunkBody: flow.ChunkBody{
-				BlockID:              toFlowIdentifier(blockID),
+				BlockID:              toFlowIdentifier(result.BlockId),
 				CollectionIndex:      uint(chunk.CollectionIndex),
 				EventCollection:      toFlowIdentifier(chunk.EventCollection),
 				NumberOfTransactions: uint64(chunk.NumberOfTransactions),
@@ -302,7 +318,7 @@ func (t TestCase) getEventHashes(client access.AccessAPIClient, block *entities.
 					ctx,
 					&access.GetTransactionByIndexRequest{
 						BlockId: block.Id,
-						Index:   uint64(txnIndex),
+						Index:   uint32(txnIndex),
 					},
 				)
 				return err
@@ -329,7 +345,7 @@ func (t TestCase) getEventHashes(client access.AccessAPIClient, block *entities.
 			ctx,
 			&access.GetTransactionByIndexRequest{
 				BlockId: block.Id,
-				Index:   uint64(txnIndex),
+				Index:   uint32(txnIndex),
 			},
 		)
 		return err
@@ -508,8 +524,19 @@ func generateTest(addr string, height uint64) Network {
 		hdrResp    *access.BlockHeaderResponse
 		err        error
 	)
+
+	test.retry(func(ctx context.Context) error {
+		hdrResp, err = client.GetLatestBlockHeader(
+			ctx,
+			&access.GetLatestBlockHeaderRequest{
+				IsSealed: true,
+			},
+		)
+		return err
+	}, "latest block header")
+
+	evtype := getEventType(flow.ChainID(hdrResp.Block.ChainId))
 	if height == 0 {
-		search = true
 		test.retry(func(ctx context.Context) error {
 			blockResp, err = client.GetLatestBlock(
 				ctx,
@@ -520,6 +547,7 @@ func generateTest(addr string, height uint64) Network {
 			return err
 		}, "latest block")
 		height = blockResp.Block.Height - 1
+		search = true
 	}
 
 blockloop:
@@ -531,7 +559,7 @@ blockloop:
 				&access.GetEventsForHeightRangeRequest{
 					EndHeight:   height,
 					StartHeight: start,
-					Type:        flowDepositedEvent,
+					Type:        evtype,
 				},
 			)
 			return err
@@ -588,6 +616,7 @@ blockloop:
 		)
 		return err
 	}, "descendant block %d", height+1)
+
 	var execResultResp *access.ExecutionResultForBlockIDResponse
 	test.retry(func(ctx context.Context) error {
 		execResultResp, err = client.GetExecutionResultForBlockID(
@@ -598,11 +627,29 @@ blockloop:
 		)
 		return err
 	}, "execution result for block %x at %d", blockResp.Block.Id, blockResp.Block.Height)
+
 	test.ResultID = hex.EncodeToString(execResultResp.ExecutionResult.PreviousResultId)
+	log.Infof(
+		"Found execution result ID %s for block %x at %d",
+		test.ResultID, blockResp.Block.Id, blockResp.Block.Height,
+	)
+
 	return Network{
 		ChainID: flow.ChainID(hdrResp.Block.ChainId),
 		Tests:   []*TestCase{test},
 	}
+}
+
+func getEventType(chainID flow.ChainID) string {
+	switch chainID {
+	case flow.Mainnet:
+		return "A.1654653399040a61.FlowToken.TokensDeposited"
+	case flow.Testnet, flow.Canary:
+		return "A.7e60df042a9c0868.FlowToken.TokensDeposited"
+	default:
+		log.Fatalf("Unsupported chain: %s", chainID)
+	}
+	panic("unreachable code")
 }
 
 func initLog() {
@@ -711,8 +758,6 @@ func verifyBlockHashing(test *TestCase) {
 		return err
 	}, "block %x", blockID)
 
-	eventHashes, _ := test.getEventHashes(client, blockResp.Block)
-
 	var execResultResp *access.ExecutionResultForBlockIDResponse
 	test.retry(func(ctx context.Context) error {
 		execResultResp, err = client.GetExecutionResultForBlockID(
@@ -724,6 +769,7 @@ func verifyBlockHashing(test *TestCase) {
 		return err
 	}, "execution result for block %x", blockID)
 
+	eventHashes, _ := test.getEventHashes(client, blockResp.Block)
 	result := execResultResp.ExecutionResult
 	if len(result.Chunks) != len(eventHashes) {
 		log.Fatalf(
@@ -845,10 +891,8 @@ func main() {
 	}
 	networks := []Network{
 		generateTest(os.Args[1], height),
-		// TODO(tav): Re-enable mainnet and testnet once Access API changes have
-		// been deployed to those networks.
-		// mainnet,
-		// testnet,
+		mainnet,
+		testnet,
 	}
 	for _, network := range networks {
 		network.validateTestConfig()
