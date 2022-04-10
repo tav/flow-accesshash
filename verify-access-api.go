@@ -866,7 +866,10 @@ func verifyBlockHashing(test *TestCase) {
 		)
 	}
 
-	log.Infof("✅ Successfully verified block hashing %s", test)
+	log.Infof(
+		"✅ Successfully verified block hashing %s: execution result ID %s and payload hash %s",
+		test, resultID, payloadHash,
+	)
 }
 
 func main() {
@@ -885,8 +888,9 @@ func main() {
 	}
 	networks := []Network{
 		generateTest(os.Args[1], height),
-		mainnet,
-		testnet,
+	}
+	if height == 0 {
+		networks = append(networks, mainnet, testnet)
 	}
 	for _, network := range networks {
 		network.validateTestConfig()
