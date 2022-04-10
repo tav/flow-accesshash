@@ -159,9 +159,15 @@ func (t TestCase) String() string {
 		if t.ChainID == "" {
 			return "to generate the dynamic test case"
 		}
-		return fmt.Sprintf("for the dynamic test case in %s", t.ChainID)
+		return fmt.Sprintf(
+			"while testing block %s at height %d in the dynamic test case on %s",
+			t.BlockID, t.BlockHeight, t.ChainID,
+		)
 	}
-	return fmt.Sprintf("for spork %d in %s", t.Spork, t.ChainID)
+	return fmt.Sprintf(
+		"while testing block %s at height %d in spork %d on %s",
+		t.BlockID, t.BlockHeight, t.Spork, t.ChainID,
+	)
 }
 
 func (t TestCase) convertExecutionResult(blockID []byte, result *entities.ExecutionResult) flowExecutionResult {
@@ -708,15 +714,15 @@ func verifyBlockHashing(test *TestCase) {
 
 	if !bytes.Equal(hdrResp.Block.Id, blockID) {
 		log.Fatalf(
-			"Mismatching block ID from block header %s: expected %x, got %x",
-			test, blockID, hdrResp.Block.Id,
+			"Mismatching block ID from block header %s: %x (from block header) vs. %x (from test case)",
+			test, hdrResp.Block.Id, blockID,
 		)
 	}
 
 	if hdrResp.Block.Height != test.BlockHeight {
 		log.Fatalf(
-			"Mismatching block height from block header %s: expected %d, got %d",
-			test, test.BlockHeight, hdrResp.Block.Id,
+			"Mismatching block height from block header %s: %d (from block header) vs. %d (from test case)",
+			test, hdrResp.Block.Id, test.BlockHeight,
 		)
 	}
 
@@ -747,7 +753,7 @@ func verifyBlockHashing(test *TestCase) {
 	result := execResultResp.ExecutionResult
 	if len(result.Chunks) != len(eventHashes) {
 		log.Fatalf(
-			"Execution result for block %x %s contains %d chunks, expected %d",
+			"Execution result for block %x %s contains %d chunks, expected %d (from block collections)",
 			blockID, test, len(result.Chunks), len(eventHashes),
 		)
 	}
@@ -756,8 +762,8 @@ func verifyBlockHashing(test *TestCase) {
 		chunk := result.Chunks[idx]
 		if !bytes.Equal(chunk.EventCollection, eventHash[:]) {
 			log.Fatalf(
-				"Got mismatching event hash within chunk at offset %d of block %x %s: expected %x, got %x",
-				idx, blockID, test, eventHash[:], chunk.EventCollection,
+				"Got mismatching event hash within chunk at offset %d of block %x %s: %x (from chunk.EventCollection) vs. %x (derived from events in transaction results)",
+				idx, blockID, test, chunk.EventCollection, eventHash[:],
 			)
 		}
 	}
@@ -787,9 +793,9 @@ func verifyBlockHashing(test *TestCase) {
 		return err
 	}, "execution result for descendant block %d", test.BlockHeight+1)
 
-	if !bytes.Equal(resultID[:], childExecResultResp.ExecutionResult.PreviousResultId) {
+	if !bytes.Equal(childExecResultResp.ExecutionResult.PreviousResultId, resultID[:]) {
 		log.Fatalf(
-			"Mismatching result ID %s: expected %x, got %x",
+			"Mismatching execution result ID %s: %x (from next block's execution result's PreviousResultID) vs. %x (derived from execution result)",
 			test, childExecResultResp.ExecutionResult.PreviousResultId, resultID[:],
 		)
 	}
@@ -810,8 +816,8 @@ func verifyBlockHashing(test *TestCase) {
 	blockIDFromHeader := test.deriveBlockID(hdr)
 	if !bytes.Equal(blockIDFromHeader[:], blockID) {
 		log.Fatalf(
-			"Mismatching block ID from header %s: expected %x, got %x for %#v",
-			test, blockID, blockIDFromHeader[:], hdr,
+			"Mismatching block ID from header %s: %x (derived from block header) vs. %x (derived) for %#v",
+			test, blockIDFromHeader[:], blockID, hdr,
 		)
 	}
 
@@ -859,16 +865,16 @@ func verifyBlockHashing(test *TestCase) {
 	resultHash := flow.MerkleRoot(resultIDs...)
 
 	payloadHash := flow.ConcatSum(collectionHash, sealHash, receiptHash, resultHash)
-	if payloadHash != hdr.PayloadHash {
+	if hdr.PayloadHash != payloadHash {
 		log.Fatalf(
-			"Mismatching payload hash for block %x in %s: expected %x, got %x for %#v",
+			"Mismatching payload hash for block %x in %s: %x (from block header) vs. %x (derived from block) for %#v",
 			blockID, test, hdr.PayloadHash[:], payloadHash[:], blockResp.Block,
 		)
 	}
 
 	log.Infof(
-		"✅ Successfully verified block hashing for block %s at height %d %s: execution result ID %s and payload hash %s",
-		test.BlockID, test.BlockHeight, test, resultID, payloadHash,
+		"✅ Successfully verified block hashing %s: execution result ID %s and payload hash %s",
+		test, resultID, payloadHash,
 	)
 }
 
