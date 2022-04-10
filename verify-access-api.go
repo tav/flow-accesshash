@@ -867,8 +867,8 @@ func verifyBlockHashing(test *TestCase) {
 	}
 
 	log.Infof(
-		"✅ Successfully verified block hashing %s: execution result ID %s and payload hash %s",
-		test, resultID, payloadHash,
+		"✅ Successfully verified block hashing for block %s at height %d %s: execution result ID %s and payload hash %s",
+		test.BlockID, test.BlockHeight, test, resultID, payloadHash,
 	)
 }
 
