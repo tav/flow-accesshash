@@ -1,4 +1,4 @@
-module github.com/onflow/flow-go/integration/accesshash
+module github.com/tav/flow-accesshash
 
 go 1.16
 

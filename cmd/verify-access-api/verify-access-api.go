@@ -18,10 +18,8 @@ import (
 	"github.com/onflow/flow-go/storage/merkle"
 	"github.com/onflow/flow/protobuf/go/flow/access"
 	"github.com/onflow/flow/protobuf/go/flow/entities"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/tav/flow-accesshash/pkg/api"
+	"github.com/tav/flow-accesshash/pkg/log"
 )
 
 const (
@@ -29,19 +27,6 @@ const (
 	eventsHeightRange = 250
 	latestVersion     = 2
 	maxMessageSize    = 100 << 20 // 100MiB
-)
-
-var (
-	log *zap.SugaredLogger
-
-	waitTimes = []time.Duration{
-		time.Second,
-		5 * time.Second,
-		30 * time.Second,
-		// NOTE(tav): We use a sentinel value of -1 to indicate the final wait
-		// time.
-		-1,
-	}
 )
 
 // NOTE(tav): Keep these updated with new test cases once new sporks have been
@@ -367,31 +352,8 @@ func (t TestCase) getEventHashes(client access.AccessAPIClient, block *entities.
 }
 
 func (t TestCase) retry(runner func(ctx context.Context) error, format string, a ...interface{}) {
-	i := 0
 	msg := fmt.Sprintf(format, a...)
-	for {
-		log.Infof("Making request to fetch %s %s", msg, t)
-		ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
-		err := runner(ctx)
-		cancel()
-		if err == nil {
-			break
-		}
-		wait := waitTimes[i]
-		if wait == -1 {
-			log.Fatalf(
-				"Failed to fetch %s %s: %s",
-				msg, t, err,
-			)
-		} else {
-			log.Errorf(
-				"Failed to fetch %s %s: %s (retrying after %s)",
-				msg, t, err, wait,
-			)
-		}
-		time.Sleep(wait)
-		i++
-	}
+	api.Retry(runner, "%s %s", msg, t)
 }
 
 type flowEvent struct {
@@ -511,7 +473,7 @@ func deriveExecutionResultV2(exec flowExecutionResult) flow.Identifier {
 }
 
 func generateTest(addr string, height uint64) Network {
-	client := newClient(addr)
+	client := api.NewClient(addr)
 	search := false
 	test := &TestCase{
 		APIServer: addr,
@@ -625,41 +587,6 @@ func getEventType(chainID flow.ChainID) string {
 	panic("unreachable code")
 }
 
-func initLog() {
-	enc := zap.NewDevelopmentEncoderConfig()
-	enc.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	enc.EncodeTime = zapcore.RFC3339TimeEncoder
-	cfg := zap.Config{
-		DisableCaller:     true,
-		DisableStacktrace: true,
-		EncoderConfig:     enc,
-		Encoding:          "console",
-		ErrorOutputPaths:  []string{"stderr"},
-		Level:             zap.NewAtomicLevelAt(zap.InfoLevel),
-		OutputPaths:       []string{"stderr"},
-		Sampling: &zap.SamplingConfig{
-			Initial:    100,
-			Thereafter: 100,
-		},
-	}
-	logger, _ := cfg.Build()
-	log = logger.Sugar()
-	zap.RedirectStdLog(logger)
-}
-
-func newClient(addr string) access.AccessAPIClient {
-	conn, err := grpc.DialContext(
-		context.Background(),
-		addr,
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxMessageSize)),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		log.Fatalf("Failed to dial Access API server %s: %s", addr, err)
-	}
-	return access.NewAccessAPIClient(conn)
-}
-
 func toFlowIdentifier(v []byte) flow.Identifier {
 	id := flow.Identifier{}
 	copy(id[:], v)
@@ -699,7 +626,7 @@ func verifyBlockHashing(test *TestCase) {
 	blockID, err := hex.DecodeString(test.BlockID)
 	exitIf(err, "decode block ID")
 
-	client := newClient(test.APIServer)
+	client := api.NewClient(test.APIServer)
 
 	var hdrResp *access.BlockHeaderResponse
 	test.retry(func(ctx context.Context) error {
@@ -883,7 +810,6 @@ func main() {
 		fmt.Println("Usage: verify-access-api <host-port-for-access-api-server> [<block-height>]")
 		os.Exit(1)
 	}
-	initLog()
 	height := uint64(0)
 	if len(os.Args) > 2 {
 		val, err := strconv.ParseUint(os.Args[2], 10, 64)
