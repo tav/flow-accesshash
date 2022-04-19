@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/onflow/flow-go/crypto"
@@ -26,6 +27,7 @@ const (
 	defaultTimeout    = 30 * time.Second
 	eventsHeightRange = 250
 	latestVersion     = 2
+	logEvents         = false
 	maxMessageSize    = 100 << 20 // 100MiB
 )
 
@@ -265,6 +267,52 @@ func (t TestCase) getEventHashes(client access.AccessAPIClient, block *entities.
 	var err error
 	eventHashes := []flow.Identifier{}
 	hasEvents := false
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	resp, err := client.GetTransactionResultsByBlockID(
+		ctx, &access.GetTransactionsByBlockIDRequest{
+			BlockId: block.Id,
+		},
+	)
+	cancel()
+	if err == nil {
+		type Collection struct {
+			txns []*access.TransactionResultResponse
+		}
+		prev := []byte{}
+		col := &Collection{}
+		cols := []*Collection{col}
+		for idx, result := range resp.TransactionResults {
+			if idx != 0 {
+				if !bytes.Equal(result.CollectionId, prev) {
+					col = &Collection{}
+					cols = append(cols, col)
+				}
+			}
+			col.txns = append(col.txns, result)
+			prev = result.CollectionId
+		}
+		for _, col := range cols {
+			colEvents := []flowEvent{}
+			for _, txn := range col.txns {
+				for _, event := range txn.Events {
+					colEvents = append(colEvents, flowEvent{
+						EventIndex:       event.EventIndex,
+						Payload:          event.Payload,
+						TransactionID:    toFlowIdentifier(txn.TransactionId),
+						TransactionIndex: event.TransactionIndex,
+						Type:             flow.EventType(event.Type),
+					})
+					hasEvents = true
+					if logEvents {
+						log.Infof("%s", colEvents[len(colEvents)-1])
+					}
+				}
+			}
+			eventHashes = append(eventHashes, t.deriveEventsHash(colEvents))
+		}
+		return eventHashes, hasEvents
+	}
+	log.Infof("🚨 Using slow path for getting events %s: %s", t, err)
 	txnIndex := -1
 	for _, col := range block.CollectionGuarantees {
 		var colResp *access.CollectionResponse
@@ -318,6 +366,9 @@ func (t TestCase) getEventHashes(client access.AccessAPIClient, block *entities.
 					Type:             flow.EventType(event.Type),
 				})
 				hasEvents = true
+				if logEvents {
+					log.Infof("%s", colEvents[len(colEvents)-1])
+				}
 			}
 		}
 		eventHashes = append(eventHashes, t.deriveEventsHash(colEvents))
@@ -346,6 +397,9 @@ func (t TestCase) getEventHashes(client access.AccessAPIClient, block *entities.
 			Type:             flow.EventType(event.Type),
 		})
 		hasEvents = true
+		if logEvents {
+			log.Infof("%s", colEvents[len(colEvents)-1])
+		}
 	}
 	eventHashes = append(eventHashes, t.deriveEventsHash(colEvents))
 	return eventHashes, hasEvents
@@ -362,6 +416,18 @@ type flowEvent struct {
 	TransactionID    flow.Identifier
 	TransactionIndex uint32
 	Type             flow.EventType
+}
+
+func (f flowEvent) String() string {
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "flowEvent{\n")
+	fmt.Fprintf(b, "\tEventIndex: %d\n", f.EventIndex)
+	fmt.Fprintf(b, "\tPayload: %s\n", f.Payload)
+	fmt.Fprintf(b, "\tTransactionID: %x\n", f.TransactionID)
+	fmt.Fprintf(b, "\tTransactionIndex: %d\n", f.TransactionIndex)
+	fmt.Fprintf(b, "\tType: %q\n", f.Type)
+	fmt.Fprintf(b, "}")
+	return b.String()
 }
 
 type flowExecutionResult struct {
