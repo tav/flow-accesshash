@@ -97,7 +97,7 @@ findseal:
 			},
 		)
 		return err
-	}, "execution result for block %x", blockID)
+	}, "execution result for block %x", nextBlockID)
 
 	results = append(results, fmt.Sprintf(
 		"Execution result ID %x specified as PreviousResultID in GetExecutionResultForBlockID response for block %x at height %d",
