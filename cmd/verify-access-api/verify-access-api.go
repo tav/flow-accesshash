@@ -26,7 +26,7 @@ import (
 const (
 	defaultTimeout    = 30 * time.Second
 	eventsHeightRange = 250
-	latestVersion     = 2
+	latestVersion     = 3
 	logEvents         = false
 	maxMessageSize    = 100 << 20 // 100MiB
 )
@@ -216,38 +216,20 @@ func (t TestCase) convertExecutionResult(blockID []byte, result *entities.Execut
 }
 
 func (t TestCase) deriveBlockID(hdr flowHeader) flow.Identifier {
-	if hdr.Timestamp.Location() != time.UTC {
-		hdr.Timestamp = hdr.Timestamp.UTC()
+	switch t.Version {
+	case 1, 2:
+		return deriveBlockIDV1(hdr)
+	case 3:
+		return deriveBlockIDV3(hdr)
 	}
-	dst := struct {
-		ChainID            flow.ChainID
-		ParentID           flow.Identifier
-		Height             uint64
-		PayloadHash        flow.Identifier
-		Timestamp          uint64
-		View               uint64
-		ParentVoterIDs     []flow.Identifier
-		ParentVoterSigData []byte
-		ProposerID         flow.Identifier
-	}{
-		ChainID:            hdr.ChainID,
-		ParentID:           hdr.ParentID,
-		Height:             hdr.Height,
-		PayloadHash:        hdr.PayloadHash,
-		Timestamp:          uint64(hdr.Timestamp.UnixNano()),
-		View:               hdr.View,
-		ParentVoterIDs:     hdr.ParentVoterIDs,
-		ParentVoterSigData: hdr.ParentVoterSigData,
-		ProposerID:         hdr.ProposerID,
-	}
-	return flow.MakeID(dst)
+	panic("unreachable code")
 }
 
 func (t TestCase) deriveEventsHash(events []flowEvent) flow.Identifier {
 	switch t.Version {
 	case 1:
 		return deriveEventsHashV1(events)
-	case 2:
+	case 2, 3:
 		return deriveEventsHashV2(events)
 	}
 	panic("unreachable code")
@@ -257,7 +239,7 @@ func (t TestCase) deriveExecutionResult(exec flowExecutionResult) flow.Identifie
 	switch t.Version {
 	case 1:
 		return deriveExecutionResultV1(exec)
-	case 2:
+	case 2, 3:
 		return deriveExecutionResultV2(exec)
 	}
 	panic("unreachable code")
@@ -443,12 +425,63 @@ type flowHeader struct {
 	Height             uint64
 	ParentID           flow.Identifier
 	ParentVoterIDs     []flow.Identifier
+	ParentVoterIndices []byte
 	ParentVoterSigData []byte
 	PayloadHash        flow.Identifier
 	ProposerID         flow.Identifier
 	ProposerSigData    []byte
 	Timestamp          time.Time
 	View               uint64
+}
+
+func deriveBlockIDV1(hdr flowHeader) flow.Identifier {
+	dst := struct {
+		ChainID            flow.ChainID
+		ParentID           flow.Identifier
+		Height             uint64
+		PayloadHash        flow.Identifier
+		Timestamp          uint64
+		View               uint64
+		ParentVoterIDs     []flow.Identifier
+		ParentVoterSigData []byte
+		ProposerID         flow.Identifier
+	}{
+		ChainID:            hdr.ChainID,
+		ParentID:           hdr.ParentID,
+		Height:             hdr.Height,
+		PayloadHash:        hdr.PayloadHash,
+		Timestamp:          uint64(hdr.Timestamp.UnixNano()),
+		View:               hdr.View,
+		ParentVoterIDs:     hdr.ParentVoterIDs,
+		ParentVoterSigData: hdr.ParentVoterSigData,
+		ProposerID:         hdr.ProposerID,
+	}
+	return flow.MakeID(dst)
+}
+
+func deriveBlockIDV3(hdr flowHeader) flow.Identifier {
+	dst := struct {
+		ChainID            flow.ChainID
+		ParentID           flow.Identifier
+		Height             uint64
+		PayloadHash        flow.Identifier
+		Timestamp          uint64
+		View               uint64
+		ParentVoterIndices []byte
+		ParentVoterSigData []byte
+		ProposerID         flow.Identifier
+	}{
+		ChainID:            hdr.ChainID,
+		ParentID:           hdr.ParentID,
+		Height:             hdr.Height,
+		PayloadHash:        hdr.PayloadHash,
+		Timestamp:          uint64(hdr.Timestamp.UnixNano()),
+		View:               hdr.View,
+		ParentVoterIndices: hdr.ParentVoterIndices,
+		ParentVoterSigData: hdr.ParentVoterSigData,
+		ProposerID:         hdr.ProposerID,
+	}
+	return flow.MakeID(dst)
 }
 
 func deriveEventsHashV1(events []flowEvent) flow.Identifier {
@@ -538,13 +571,13 @@ func deriveExecutionResultV2(exec flowExecutionResult) flow.Identifier {
 	return flow.MakeID(dst)
 }
 
-func generateTest(addr string, height uint64) Network {
+func generateTest(addr string, height uint64, version int) Network {
 	client := api.NewClient(addr)
 	search := false
 	test := &TestCase{
 		APIServer: addr,
 		Dynamic:   true,
-		Version:   latestVersion,
+		Version:   version,
 	}
 
 	var (
@@ -645,8 +678,10 @@ func getEventType(chainID flow.ChainID) string {
 	switch chainID {
 	case flow.Mainnet:
 		return "A.1654653399040a61.FlowToken.TokensDeposited"
-	case flow.Testnet, flow.Canary:
+	case flow.Testnet:
 		return "A.7e60df042a9c0868.FlowToken.TokensDeposited"
+	case flow.Canary:
+		return "A.0661ab7d6696a460.FlowToken.TokensDeposited"
 	default:
 		log.Fatalf("Unsupported chain: %s", chainID)
 	}
@@ -798,11 +833,12 @@ func verifyBlockHashing(test *TestCase) {
 		Height:             test.BlockHeight,
 		ParentID:           toFlowIdentifier(hdrResp.Block.ParentId),
 		ParentVoterIDs:     toIdentifierSlice(hdrResp.Block.ParentVoterIds),
+		ParentVoterIndices: hdrResp.Block.ParentVoterIndices,
 		ParentVoterSigData: hdrResp.Block.ParentVoterSigData,
 		PayloadHash:        toFlowIdentifier(hdrResp.Block.PayloadHash),
 		ProposerID:         toFlowIdentifier(hdrResp.Block.ProposerId),
 		ProposerSigData:    hdrResp.Block.ProposerSigData,
-		Timestamp:          hdrResp.Block.Timestamp.AsTime(),
+		Timestamp:          hdrResp.Block.Timestamp.AsTime().UTC(),
 		View:               hdrResp.Block.View,
 	}
 
@@ -873,10 +909,11 @@ func verifyBlockHashing(test *TestCase) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: verify-access-api <host-port-for-access-api-server> [<block-height>]")
+		fmt.Println("Usage: verify-access-api <host-port-for-access-api-server> [<block-height> <version>]")
 		os.Exit(1)
 	}
 	height := uint64(0)
+	version := latestVersion
 	if len(os.Args) > 2 {
 		val, err := strconv.ParseUint(os.Args[2], 10, 64)
 		if err != nil {
@@ -884,8 +921,15 @@ func main() {
 		}
 		height = val
 	}
+	if len(os.Args) > 3 {
+		val, err := strconv.ParseUint(os.Args[3], 10, 64)
+		if err != nil {
+			log.Fatalf("Failed to decode version value %q: %s", os.Args[3], err)
+		}
+		version = int(val)
+	}
 	networks := []Network{
-		generateTest(os.Args[1], height),
+		generateTest(os.Args[1], height, version),
 	}
 	if height == 0 {
 		networks = append(networks, mainnet, testnet)
