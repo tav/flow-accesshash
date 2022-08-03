@@ -26,7 +26,7 @@ import (
 const (
 	defaultTimeout    = 30 * time.Second
 	eventsHeightRange = 250
-	latestVersion     = 3
+	latestVersion     = 4
 	logEvents         = false
 	maxMessageSize    = 100 << 20 // 100MiB
 )
@@ -231,6 +231,8 @@ func (t TestCase) deriveEventsHash(events []flowEvent) flow.Identifier {
 		return deriveEventsHashV1(events)
 	case 2, 3:
 		return deriveEventsHashV2(events)
+	case 4:
+		return deriveEventsHashV4(events)
 	}
 	panic("unreachable code")
 }
@@ -539,6 +541,37 @@ func deriveEventsHashV2(events []flowEvent) flow.Identifier {
 	return root
 }
 
+func deriveEventsHashV4(events []flowEvent) flow.Identifier {
+	tree, err := merkle.NewTree(flow.IdentifierLen)
+	if err != nil {
+		log.Fatalf("Failed to instantiate merkle tree: %s", err)
+	}
+	for _, src := range events {
+		dst := struct {
+			TxID             []byte
+			Index            uint32
+			Type             string
+			TransactionIndex uint32
+			Payload          []byte
+		}{
+			TxID:             src.TransactionID[:],
+			Index:            src.EventIndex,
+			Type:             string(src.Type),
+			TransactionIndex: src.TransactionIndex,
+			Payload:          src.Payload,
+		}
+		fp := fingerprint.Fingerprint(dst)
+		eventID := flow.MakeIDFromFingerPrint(fp)
+		_, err = tree.Put(eventID[:], fp)
+		if err != nil {
+			log.Fatalf("Failed to put event into the merkle tree: %s", err)
+		}
+	}
+	var root flow.Identifier
+	copy(root[:], tree.Hash())
+	return root
+}
+
 func deriveExecutionResultV1(exec flowExecutionResult) flow.Identifier {
 	dst := struct {
 		PreviousResultID flow.Identifier
@@ -680,7 +713,7 @@ func getEventType(chainID flow.ChainID) string {
 		return "A.1654653399040a61.FlowToken.TokensDeposited"
 	case flow.Testnet:
 		return "A.7e60df042a9c0868.FlowToken.TokensDeposited"
-	case flow.Canary:
+	case flow.Sandboxnet:
 		return "A.0661ab7d6696a460.FlowToken.TokensDeposited"
 	default:
 		log.Fatalf("Unsupported chain: %s", chainID)
