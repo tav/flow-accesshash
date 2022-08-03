@@ -26,7 +26,7 @@ import (
 const (
 	defaultTimeout    = 30 * time.Second
 	eventsHeightRange = 250
-	latestVersion     = 3
+	latestVersion     = 4
 	logEvents         = false
 	maxMessageSize    = 100 << 20 // 100MiB
 )
